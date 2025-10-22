@@ -1,0 +1,14 @@
+# auditor.yaml — defaults
+timeouts:
+  per_tool_seconds: 600
+  overall_minutes: 60
+memory:
+  per_tool_mb: 1024
+tools:
+  - ruff
+  - mypy        # or pyright
+  - bandit
+  - radon
+  - semgrep
+  - pip_audit
+  - gitleaks

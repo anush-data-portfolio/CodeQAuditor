@@ -1,0 +1,3 @@
+pip install bandit[baseline]
+pip install bandit[sarif]
+shiny
