@@ -7,99 +7,30 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, asdict
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Iterable, DefaultDict, Set
-from collections import defaultdict
+from typing import Any, List, Optional, Sequence, Union, cast
+
+from auditor.models import ToolRunResult
 
 _IS_POSIX = os.name == "posix"
 if _IS_POSIX:
     import resource  # type: ignore[attr-defined]
 
-Json = Union[dict, list, str, int, float, bool, None]
-
-
 # ---------------------------------------------------------------------------
-# Tool execution result
+# Base tool wrappers
 # ---------------------------------------------------------------------------
 
-@dataclass
-class ToolRunResult:
-    tool: str
-    cmd: List[str]
-    cwd: str
-    returncode: int
-    duration_s: float
-    stdout: str
-    stderr: str
-    parsed_json: Optional[Json]
 
-    def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        # Avoid storing giant buffers in DB if not needed: keep lengths too
-        d["stdout_bytes"] = len(self.stdout.encode("utf-8", "ignore"))
-        d["stderr_bytes"] = len(self.stderr.encode("utf-8", "ignore"))
-        return d
-
-
-# ---------------------------------------------------------------------------
-# Normalized finding
-# ---------------------------------------------------------------------------
-
-# Canonical kinds for downstream partitioning & tables
-FINDING_KIND_ISSUE = "issue"      # potential bug / vuln / dangerous pattern
-FINDING_KIND_ANALYSIS = "analysis" # metrics / code health (complexity, MI, Halstead, duplication...)
-FINDING_KIND_SUMMARY = "summary"   # tool-level summary/metrics row
-
-# A few well-known metric keys you can reuse in tools (optional, not enforced)
-# - Cyclomatic complexity: "cyclomatic" (float or int)
-# - Maintainability Index: "mi" (float), "mi_rank" (str)
-# - Halstead metrics: "halstead_volume", "halstead_difficulty", "halstead_effort",
-#   "halstead_bugs", "halstead_time"
-# - Duplication: "dup_lines", "dup_tokens", "dup_percent"
-# - Size: "loc", "sloc", "comments", "functions", etc.
-
-@dataclass
-class Finding:
-    # Minimal normalized shape; tools can stash anything else in `extra`
-    name: str
-    tool: str
-    rule_id: Optional[str]
-    message: str
-    file: Optional[str]
-    line: Optional[int]
-    col: Optional[int]
-    end_line: Optional[int] = None
-    end_col: Optional[int] = None
-    fingerprint: Optional[str] = None
-    extra: Optional[Dict[str, Any]] = None
-
-    # NEW: classification & metrics (safe defaults keep backward compatibility)
-    kind: str = FINDING_KIND_ISSUE              # "issue" | "analysis" | "summary"
-    category: Optional[str] = None              # e.g. "security", "style", "complexity", "duplication"
-    tags: Optional[List[str]] = None            # free-form labels (["fastapi","auth","crypto"])
-    metrics: Optional[Dict[str, float]] = None  # numeric metrics for analysis rows
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-# ---------------------------------------------------------------------------
-# Base tool wrapper
-# ---------------------------------------------------------------------------
-
-class AuditTool:
+class AuditTool(ABC):
     """
     Base class for all analyzer wrappers.
-    Subclasses should implement:
+    Subclasses must implement:
       - name (property)
-      - build_cmd(path: str) -> List[str]   OR override audit()
-      - parse(result: ToolRunResult) -> List[Finding]
+      - audit(path: str | Path) -> ToolRunResult
+      - build_cmd(path: str) for command-driven tools
 
-    Conventions:
-      - For bug/vuln/style problems: emit Finding(kind="issue", severity=...)
-      - For code-health/metrics: emit Finding(kind="analysis", metrics={...})
-      - For tool-level aggregates: emit Finding(kind="summary", rule_id="summary")
+    `parse` can be overridden for optional post-processing of the run result.
     """
 
     #: default per-process time limit (seconds)
@@ -130,11 +61,8 @@ class AuditTool:
     # ----- Properties to override -------------------------------------------------
 
     @property
+    @abstractmethod
     def name(self) -> str:
-        raise NotImplementedError
-
-    def build_cmd(self, path: str) -> List[str]:
-        """Default: subclass provides a single CLI. Override for multi-step tools."""
         raise NotImplementedError
 
     # ----- Public API -------------------------------------------------------------
@@ -143,22 +71,26 @@ class AuditTool:
         exe = self._exe_from_cmd(self.build_cmd("."))
         return shutil.which(exe) is not None
 
-    def audit(self, path: Union[str, Path]) -> Tuple[List[Finding], ToolRunResult]:
+    @abstractmethod
+    def audit(self, path: Union[str, Path]) -> ToolRunResult:
         """
-        Run the tool once against `path` and return (findings, run_result).
-        Multi-command tools should override this method.
+        Run the analyzer against `path` and return the raw ToolRunResult.
         """
-        path = str(Path(path))
-        cmd = self.build_cmd(path)
-        run = self._run(cmd, cwd=path)
-        findings = self.parse(run)
-        return findings, run
+        raise NotImplementedError
 
-    # ----- Parsing to normalized findings ----------------------------------------
+    def build_cmd(self, path: str) -> List[str]:
+        """
+        Optional helper that command-based tools can implement.
+        Used by `is_installed` and `CommandAuditTool`.
+        """
+        raise NotImplementedError
 
-    def parse(self, result: ToolRunResult) -> List[Finding]:
-        """Default parser does nothing. Subclasses must implement."""
-        return []
+    def parse(self, result: ToolRunResult) -> None:
+        """
+        Hook for subclasses to post-process results.
+        Default implementation is a no-op.
+        """
+        return None
 
     # ----- Utilities --------------------------------------------------------------
 
@@ -200,21 +132,29 @@ class AuditTool:
         except subprocess.TimeoutExpired as e:
             # Synthesize a result on timeout
             duration = time.time() - started
+            stdout = e.stdout
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", "ignore")
+            stderr = e.stderr
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "ignore")
             return ToolRunResult(
                 tool=self.name,
                 cmd=list(cmd),
                 cwd=os.path.abspath(cwd or os.getcwd()),
                 returncode=124,
                 duration_s=duration,
-                stdout=e.stdout or "",
-                stderr=(e.stderr or "") + f"\n[TIMEOUT after {self.timeout_s}s]",
+                stdout=stdout or "",
+                stderr=(stderr or "") + f"\n[TIMEOUT after {self.timeout_s}s]",
                 parsed_json=None,
             )
         duration = time.time() - started
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        stdout_raw = cast(Optional[str], proc.stdout)
+        stderr_raw = cast(Optional[str], proc.stderr)
+        stdout = stdout_raw or ""
+        stderr = stderr_raw or ""
 
-        parsed: Optional[Json] = None
+        parsed = None
         # Best-effort JSON parse if it looks like JSON
         txt = stdout.strip()
         if txt.startswith("{") or txt.startswith("["):
@@ -235,112 +175,94 @@ class AuditTool:
         )
 
 
-# ---------------------------------------------------------------------------
-# Helpers for partitioning findings & per-tool summary tables
-# ---------------------------------------------------------------------------
-
-def partition_findings_by_kind(findings: Iterable[Finding]) -> Dict[str, List[Finding]]:
+class CommandAuditTool(AuditTool):
     """
-    Split into buckets: issues / analysis / summaries / other.
-    Tools should set Finding.kind, but we’re defensive here.
+    Convenience base class for tools that execute a single command and optionally
+    post-process its output via `parse`.
     """
-    buckets: Dict[str, List[Finding]] = {
-        FINDING_KIND_ISSUE: [],
-        FINDING_KIND_ANALYSIS: [],
-        FINDING_KIND_SUMMARY: [],
-        "other": [],
-    }
-    for f in findings:
-        k = (f.kind or FINDING_KIND_ISSUE).lower()
-        if k in (FINDING_KIND_ISSUE, FINDING_KIND_ANALYSIS, FINDING_KIND_SUMMARY):
-            buckets[k].append(f)
-        else:
-            # Heuristic fallback for legacy rows
-            if f.rule_id == "summary" or (f.name and f.name.endswith(".summary")):
-                buckets[FINDING_KIND_SUMMARY].append(f)
-            elif f.metrics:
-                buckets[FINDING_KIND_ANALYSIS].append(f)
-            else:
-                buckets[FINDING_KIND_ISSUE].append(f)
-    return buckets
+
+    def audit(self, path: Union[str, Path]) -> ToolRunResult:
+        path_str = str(Path(path))
+        cmd = self.build_cmd(path_str)
+        print(f"Running {self.name} on {path_str}: {' '.join(cmd)}")
+        run = self._run(cmd, cwd=path_str)
+        self.parse(run)
+        return run
 
 
-@dataclass
-class ToolSummary:
-    tool: str                          # e.g., "bandit", "radon", "jscpd", "pyright"
-    issues: int                        # count of issue-kind findings
-    analysis: int                      # count of analysis-kind findings
-    files_with_findings: int           # number of files touched by this tool
-    duration_s: Optional[float] = None # if available from a summary finding
-    returncode: Optional[int] = None   # if available from a summary finding
-    rules: Optional[List[str]] = None  # unique rule ids reported (if available)
-    extra: Optional[Dict[str, Any]] = None  # free-form copy of summary.extra (if any)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-def build_tool_summaries(findings: Iterable[Finding]) -> List[ToolSummary]:
+class NodeToolMixin:
     """
-    Build one summary per base tool. Works two ways:
-      1) If a tool emits a summary finding (kind=summary, rule_id="summary"),
-         we’ll use its extra fields (duration_s, returncode, rules, etc.).
-         We also normalize tool names like "bandit-metrics" -> "bandit".
-      2) Otherwise, we compute counts from the available findings for that tool.
+    Run Node-based CLIs from a *central* cache (no install in target repos).
+    Assumes a layout like:
+      <repo_root>/script_tool_cache/{node_modules, eslint.config.mjs, package.json}
+
+    Env overrides:
+      AUDIT_NODE_CACHE: absolute path to that folder (optional)
     """
-    # Group findings by their *base* tool name (strip "-metrics" suffix)
-    by_tool: DefaultDict[str, List[Finding]] = defaultdict(list)
-    for f in findings:
-        t = (f.tool or "").strip()
-        base_tool = t[:-8] if t.endswith("-metrics") else t
-        by_tool[base_tool].append(f)
 
-    summaries: List[ToolSummary] = []
+    def _node_prefix(self) -> Path:
+        # Default: <repo_root>/script_tool_cache relative to this file
+        env = os.environ.get("AUDIT_NODE_CACHE")
+        if env:
+            return Path(env).expanduser().resolve()
+        # auditor/tools/tsx/nodejs.py → repo_root/node_tools
+        return Path(__file__).resolve().parents[2] / "node_tools"
 
-    for base_tool, rows in by_tool.items():
-        kind_buckets = partition_findings_by_kind(rows)
-        issues = kind_buckets[FINDING_KIND_ISSUE]
-        analyses = kind_buckets[FINDING_KIND_ANALYSIS]
-        summaries_rows = kind_buckets[FINDING_KIND_SUMMARY]
+    def _node_bin(self, exe: str) -> Path:
+        return self._node_prefix() / "node_modules" / ".bin" / exe
 
-        # Severity counts (only for issues)
-        files_touched: Set[str] = set()
-        rules: Set[str] = set()
+    def _prepare_node_env(self) -> None:
+        """Augment self.env so node resolves binaries/plugins from central cache."""
+        prefix = self._node_prefix()
+        bin_dir = prefix / "node_modules" / ".bin"
+        node_modules = prefix / "node_modules"
 
-        for r in issues:
-            if r.file:
-                files_touched.add(r.file)
-            if r.rule_id:
-                rules.add(r.rule_id)
-
-        # If we have an explicit summary row from the tool, prefer its extra metadata
-        duration_s = None
-        returncode = None
-        summary_extra: Dict[str, Any] = {}
-        if summaries_rows:
-            # take the first summary row (most tools emit exactly one)
-            s = summaries_rows[0]
-            if s.extra and isinstance(s.extra, dict):
-                summary_extra = dict(s.extra)
-                duration_s = summary_extra.get("timeInSec") or summary_extra.get("duration_s")
-                returncode = summary_extra.get("returncode")
-                # rules may be provided by tool summaries (e.g., pyright)
-                if "rules" in summary_extra and isinstance(summary_extra["rules"], list):
-                    rules.update(str(x) for x in summary_extra["rules"])
-
-        summaries.append(
-            ToolSummary(
-                tool=base_tool,
-                issues=len(issues),
-                analysis=len(analyses),
-                files_with_findings=len(files_touched),
-                duration_s=duration_s if isinstance(duration_s, (int, float)) else None,
-                returncode=returncode if isinstance(returncode, int) else None,
-                rules=sorted(rules) if rules else None,
-                extra=summary_extra or None,
-            )
+        # PATH: ensure the central .bin is first
+        prev_path = self.env.get("PATH", "")
+        self.env["PATH"] = (
+            f"{bin_dir}{os.pathsep}{prev_path}" if prev_path else str(bin_dir)
         )
 
-    # Stable sort: most actionable first (issues desc), then analysis desc, then name
-    summaries.sort(key=lambda s: (-s.issues, -s.analysis, s.tool))
-    return summaries
+        # NODE_PATH: help resolvers (plugins/parsers) load from the central cache
+        prev_np = self.env.get("NODE_PATH", "")
+        self.env["NODE_PATH"] = (
+            f"{node_modules}{os.pathsep}{prev_np}" if prev_np else str(node_modules)
+        )
+
+        # ESLint flat config (central eslint.config.mjs)
+        self.env.setdefault("ESLINT_USE_FLAT_CONFIG", "true")
+
+        # Hardening: no network installs (we don't call npx, but be explicit)
+        self.env.setdefault("NPM_CONFIG_AUDIT", "false")
+        self.env.setdefault("NPM_CONFIG_FUND", "false")
+        self.env.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")
+
+    def _node_cmd(
+        self,
+        *,
+        exe: str,
+        cwd: Union[str, Path, None] = None,
+        npm_package: Optional[str] = None,
+        version: Optional[str] = None,
+        subcommand: Sequence[str] | None = None,
+        extra: Sequence[str] | None = None,
+    ) -> List[str]:
+        """
+        Compose a command that invokes a central binary directly.
+        We avoid npx to guarantee offline, deterministic execution.
+        """
+        # Accept but ignore npm_package/version so callers can share signature
+        # with mixins that still rely on npx-style execution.
+        _ = npm_package, version
+
+        bin_path = self._node_bin(exe)
+        if not bin_path.exists():
+            raise FileNotFoundError(
+                f"Missing {exe} at {bin_path}. Ensure node_tools/node_modules is populated."
+            )
+        cmd: List[str] = [str(bin_path)]
+        if subcommand:
+            cmd += list(subcommand)
+        if extra:
+            cmd += list(extra)
+        return cmd

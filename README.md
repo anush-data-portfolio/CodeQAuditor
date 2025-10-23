@@ -1,365 +1,88 @@
-# CodeQAuditor
+CodeQAuditor
+============= 
 
-Repo-agnostic static-analysis runner for **Python** and **JS/TS/TSX** codebases.
-You point it at a repo path; it runs a curated set of analyzers and emits normalized **Findings** that share a single schema (`kind`, `category`, `tags`, `metrics`, locations, etc.). Tools are installed **once** in this project and reused across any number of target repos — no per-repo installs.
+CodeQAuditor is a repo-agnostic orchestration layer for static-analysis tooling across Python and JavaScript/TypeScript codebases. A single CLI seeds the SQLite data store, launches the individual analyzers, normalises their output into shared ORM models, and persists every scan for later reporting.
 
----
 
-## Highlights
+Project snapshot
+----------------
 
-* **One toolchain, many repos**: Python tools live in a single virtualenv; JS/TS tools live in a single `node_modules` folder. You scan 500k repos without installing into each.
-* **Batteries included**:
-
-  * Python: `ruff`, `mypy`, `pyright`, `radon` (CC/MI/Halstead/LOC), `bandit`, `semgrep` (optional), `vulture`, `gitleaks`, `jscpd`.
-  * JS/TS/TSX: `eslint`, `@typescript-eslint/*`, `madge` (cycles), `depcheck` (unused deps), `ts-prune`, `tsc` (typecheck only), `@biomejs/biome`, `jscpd`.
-* **Noise-reduced defaults**: Focus on **code quality** (complexity, style, correctness); e.g., ESLint suppresses unresolved-import churn by default.
-* **Unified Finding schema** with `kind` (`issue|analysis|summary`), `category` (e.g., `security`, `complexity`, `architecture`, `lint`), free-form `tags`, and numeric `metrics`.
-* **Portable configs** (in `auditor/`) that analyzers can reuse when a target repo has none.
-
----
-
-## Repo layout (brief)
-
-```
-auditor/
-  auditor_cli/           # simple CLI runner
-  normalize/             # Finding <-> SARIF/metrics helpers
-  runtime/               # fs helpers & sandbox utilities
-  storage/               # writers (db/files)
-  tools/
-    base.py              # AuditTool/Finding/ToolRunResult
-    python/              # py analyzers
-    tsx/                 # js/ts analyzers (NodeToolMixin, etc.)
-auditor/auditor.yaml     # (optional) scan plan / defaults
-quick_probe.py           # tiny demo runner
-requirements.txt         # Python deps for this project
-```
-
----
-
-## Prerequisites
-
-* **Python** 3.12+ (recommended; works on 3.10+ for most tools)
-* **Node.js** 18+ (20+ recommended) and **npm**
-
----
-
-## One-time setup
-
-### 1) Python environment
-
-```bash
-cd /home/you/CodeQAuditor
-python3 -m venv .auditenv
-source .auditenv/bin/activate
-
-pip install -U pip
-pip install -r requirements.txt
-```
-
-### 2) Central JS/TS toolchain (installed **once**)
-
-```bash
-cd auditor
-npm init -y
-npm i -D \
-  eslint @eslint/js typescript @typescript-eslint/parser @typescript-eslint/eslint-plugin \
-  eslint-plugin-react eslint-plugin-react-hooks eslint-plugin-jsx-a11y \
-  eslint-plugin-unicorn eslint-plugin-sonarjs \
-  madge depcheck ts-prune @biomejs/biome jscpd
-```
-
-Export a helper so analyzers can find the local binaries:
-
-```bash
-export AUDITOR_NODE_BIN="$(pwd)/node_modules/.bin"
-# consider putting this in your shell rc or your launcher script
-```
-
----
-
-## Portable configs (live inside `auditor/`)
-
-> Use these when a target repo lacks its own config, or when you want consistent rules everywhere.
-
-### ESLint (flat config)
-
-`auditor/eslint.config.mjs`
-
-```js
-import js from "@eslint/js";
-import tseslint from "@typescript-eslint/eslint-plugin";
-import tsParser from "@typescript-eslint/parser";
-import react from "eslint-plugin-react";
-import reactHooks from "eslint-plugin-react-hooks";
-import a11y from "eslint-plugin-jsx-a11y";
-import unicorn from "eslint-plugin-unicorn";
-import sonarjs from "eslint-plugin-sonarjs";
-
-export default [
-  js.configs.recommended,
-  {
-    files: ["**/*.{js,jsx,ts,tsx}"],
-    languageOptions: {
-      parser: tsParser,
-      parserOptions: { ecmaVersion: "latest", sourceType: "module", project: false },
-    },
-    plugins: {
-      "@typescript-eslint": tseslint,
-      react, "react-hooks": reactHooks, "jsx-a11y": a11y, unicorn, sonarjs,
-    },
-    rules: {
-      // Focus on code quality; suppress import-churn noise:
-      "import/no-unresolved": "off",
-      "node/no-missing-import": "off",
-      "n/no-missing-import": "off",
-      "n/no-missing-require": "off",
-      "node/no-missing-require": "off",
-
-      "no-console": "warn",
-      "no-unused-vars": "off",
-      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
-
-      "react-hooks/rules-of-hooks": "error",
-      "react-hooks/exhaustive-deps": "warn",
-      "jsx-a11y/alt-text": "warn",
-      "unicorn/prefer-optional-catch-binding": "error",
-      "sonarjs/cognitive-complexity": ["warn", 15],
-    },
-    settings: { react: { version: "detect" } },
-  },
-];
-```
-
-### TypeScript config (standalone)
-
-`auditor/tsconfig.standalone.json`
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "jsx": "react-jsx",
-    "allowJs": true,
-    "checkJs": false,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "resolveJsonModule": true,
-    "esModuleInterop": true
-  },
-  "include": ["**/*.{ts,tsx,js,jsx}"],
-  "exclude": ["**/node_modules", "**/dist", "**/build", "**/.next"]
-}
-```
-
-> Your JS/TS tools use these when the target repo doesn’t provide its own config, or you pass them explicitly.
-
----
-
-## Running a scan
-
-### Quick demo (single repo)
-
-```bash
-# ensure envs are set
-source .auditenv/bin/activate
-export AUDITOR_NODE_BIN="/home/you/CodeQAuditor/auditor/node_modules/.bin"
-
-python3 quick_probe.py  # edit this file to point at any repo you want
-```
-
-`quick_probe.py` typically looks like:
-
-```python
-from auditor.tools.tsx.eslint import EslintTool
-from auditor.tools.tsx.tsc import TscTool
-from auditor.tools.python.radon import RadonTool
-from pathlib import Path
-
-repo = Path("/path/to/target/repo")
-
-tools = [
-  RadonTool(),                        # Python complexity/MI/Halstead/LOC
-  EslintTool(config_path="auditor/eslint.config.mjs"),
-  TscTool(project="auditor/tsconfig.standalone.json"),
-  # add others: MadgeTool(), DepcheckTool(), PyrightTool(), etc.
-]
-
-for t in tools:
-    findings, run = t.audit(repo)
-    print(t.name, len(findings), run.returncode)
-```
-
-### CLI runner
-
-There’s a simple CLI in `auditor/auditor_cli/main.py`. A typical pattern:
-
-```bash
-python -m auditor.auditor_cli.main \
-  --repo /path/to/repo \
-  --tools tsx:eslint,tsx:tsc,tsx:madge,python:radon,python:ruff \
-  --eslint-config auditor/eslint.config.mjs \
-  --tsc-project auditor/tsconfig.standalone.json \
-  --out findings.json
-```
-
-*(Adjust flags to match your CLI’s current argument names.)*
-
----
-
-## What “Finding” looks like
-
-All tools normalize into the same shape:
-
-```python
-@dataclass
-class Finding:
-    name: str                 # "eslint.no-unused-vars"
-    tool: str                 # "eslint"
-    rule_id: Optional[str]    # "no-unused-vars"
-    message: str              # human-readable message
-    file: Optional[str]       # repo-relative path
-    line: Optional[int]
-    col: Optional[int]
-    end_line: Optional[int]
-    end_col: Optional[int]
-    fingerprint: Optional[str]
-    extra: Optional[Dict[str, Any]]
-
-    # classification & metrics
-    kind: str = "issue"       # "issue" | "analysis" | "summary"
-    category: Optional[str] = None   # "lint" | "security" | "complexity" | ...
-    tags: Optional[List[str]] = None # free-form labels
-    metrics: Optional[Dict[str, float]] = None  # numeric metrics
-```
-
-Examples:
-
-* Radon CC blocks → `kind="analysis"`, `category="complexity"`, `metrics={"cc": 8}`.
-* ESLint diagnostics → `kind="issue"`, `category="lint"/"types"/"a11y"`, `metrics={"count": 1}`.
-* Madge cycle → `kind="issue"`, `category="architecture"`, `metrics={"cycle_length": 4}`.
-
-You can serialize these to JSON or SARIF using helpers under `auditor/normalize/`.
-
----
-
-## Tool catalogue (default posture)
-
-**Python**
-
-* `ruff` — fast lint/format. Category: `lint` / `style`.
-* `mypy` — type checking + coverage metrics (file + repo). Category: `type-check`.
-* `pyright` — fast type checking (env-noise suppressed). Category: `type-check`.
-* `radon` — CC/MI/Halstead/LOC per file. Category: `complexity` / `analysis`.
-* `bandit` — security heuristics. Category: `security`.
-* `semgrep` (optional) — patterns/queries. Category: `security` / `bug-risk`.
-* `vulture` — dead code. Category: `deadcode`.
-* `gitleaks` — secrets. Category: `secrets`.
-* `jscpd` — duplication. Category: `duplication`.
-
-**JS/TS/TSX**
-
-* `eslint` — quality-focused (import-noise suppressed). Category: `lint` / `types` / `a11y`.
-* `tsc` — no-emit typecheck. Category: `type-check`.
-* `madge` — circular deps + orphans. Category: `architecture` / `deadcode`.
-* `depcheck` — unused/missing deps (signal only; noisy across monorepos). Category: `deps`.
-* `ts-prune` — unused exports. Category: `deadcode`.
-* `biome` — formatter/lints (fast). Category: `lint`.
-* `jscpd` — duplication. Category: `duplication`.
-
----
-
-## Scaling to many repos
-
-* **Reuse environments**:
-
-  * Python: keep `.auditenv` active; install once.
-  * Node: keep `auditor/node_modules`; set `AUDITOR_NODE_BIN` once.
-* **No per-repo installs**: tools run in “read-only” mode against repo paths.
-* **Timeouts**: each tool inherits a default timeout (300s). Tweak via constructor.
-* **Parallelism**: run multiple scans with your queue in `auditor/queue/` (local, Celery/Ray stubs).
-* **Disk considerations**: mypy uses a temp sqlite cache per run; other tools are mostly stateless.
-
----
-
-## Troubleshooting
-
-* **`FileNotFoundError: 'eslint'` or `'tsc'`**
-  Ensure `AUDITOR_NODE_BIN` is set and points to `auditor/node_modules/.bin`. Confirm the binaries exist there.
-
-  ```bash
-  ls $AUDITOR_NODE_BIN/eslint $AUDITOR_NODE_BIN/tsc
-  ```
-
-* **ESLint `ERR_MODULE_NOT_FOUND` for `@eslint/js` / `@eslint/eslintrc`**
-  Install ESLint + plugins **next to your config file** (`auditor/`). Your tools should run the binary from that same folder (see `NodeToolMixin`) and pass `-c auditor/eslint.config.mjs`.
-
-* **TSC “Project not found”**
-  Provide `-p auditor/tsconfig.standalone.json` (or a repo’s own `tsconfig.json`).
-
-* **Empty JSON from a tool**
-  Usually means the tool crashed before emitting JSON. Inspect `ToolRunResult.stderr` and fix the missing module/config.
-
----
-
-## Extending with a new tool
-
-1. Create `auditor/tools/{python|tsx}/mytool.py`.
-2. Subclass `AuditTool`, implement `name`, `build_cmd()` **or** `audit()`, and `parse()`.
-3. Emit `Finding` objects. Populate `kind/category/tags/metrics` thoughtfully.
-4. Wire it into your CLI / scan plan.
-
-Template:
-
-```python
-from ..base import AuditTool, Finding
-
-class MyTool(AuditTool):
-    @property
-    def name(self): return "mytool"
-
-    def build_cmd(self, path: str) -> list[str]:
-        return ["mytool", "--json", "."]
-
-    def parse(self, result) -> list[Finding]:
-        data = result.parsed_json or []
-        findings = []
-        # ...build Finding(...)
-        return findings
-```
-
----
-
-## Recommended run profiles
-
-**Python-heavy repo**
-
-```bash
-python -m auditor.auditor_cli.main \
-  --repo /path \
-  --tools python:ruff,python:radon,python:mypy,python:pyright,python:jscpd,python:bandit
-```
-
-**Next.js/React repo**
-
-```bash
-python -m auditor.auditor_cli.main \
-  --repo /path \
-  --tools tsx:eslint,tsx:tsc,tsx:madge,tsx:ts-prune,tsx:jscpd \
-  --eslint-config auditor/eslint.config.mjs \
-  --tsc-project auditor/tsconfig.standalone.json
-```
-
----
-
-## Notes
-
-* This project doesn’t enforce severity; **you decide** how to interpret `category/tags/metrics` downstream.
-* Many tools can be noisy across polyrepos/monorepos — defaults here trend conservative to keep signal high.
-
----
-
-Happy auditing!
+- **CLI entry point**: `python -m auditor` exposes the Typer-based interface defined in `auditor/cli.py`.
+- **Services**: `auditor/services/orchestrator.py` runs tools in parallel subprocesses, converts raw results through `parsetomodels`, and writes scan rows via the DB helpers.
+- **Database layer**: `auditor/db/connection.py`, `auditor/db/utils.py`, and `auditor/db/seed.py` manage the SQLite engine, WAL configuration, session scope, and persistence helpers such as `save_scan_and_rows`.
+- **Models**: `auditor/models/orm.py` contains the SQLAlchemy metadata; conversion helpers live in `auditor/models/schema.py` and the specialised parser modules.
+- **Tool wrappers**: `auditor/tools/...` expose `audit(target) -> ToolRunResult` contracts so every analyzer can be launched either directly or through the CLI.
+- **Main module**: `auditor/main.py` invokes the CLI application, enabling `python -m auditor` usage.
+
+
+Supported analyzers
+-------------------
+
+| Tool      | Language focus | Purpose | Output handling |
+|-----------|----------------|---------|-----------------|
+| Bandit    | Python         | Security linting for common vulnerabilities | Parses `run.parsed_json["results"]` into `BanditResult` rows |
+| Mypy      | Python         | Static type checking (stdout NDJSON) | Converts stdout text into `MypyResult` rows |
+| Radon     | Python         | Complexity, maintainability, Halstead, raw metrics | Aggregates the combined JSON bundle into `RadonResult` rows |
+| Vulture   | Python         | Dead code detection | Parses stdout lines into `VultureResult` rows, honouring a minimum confidence threshold |
+| ESLint    | JS/TS/JSX/TSX  | Style and quality linting using the central rule pack | Builds scan, file, and issue rows through `eslint_rows_to_models` |
+
+Each tool wrapper inherits from `AuditTool` or `CommandAuditTool` and returns a `ToolRunResult` with the fields required by the parsing helpers (`cmd`, `cwd`, `returncode`, `duration_s`, `stdout`, `stderr`, `parsed_json`).
+
+
+Database workflow
+-----------------
+
+1. `python -m auditor seed-db` seeds the SQLite database (default path `db/auditor.sqlite3`), enabling WAL mode and creating tables from `auditor.models.orm.Base`.
+2. Every tool run produces one scan row (`ScanMetadata`) and zero or more result rows stored in the corresponding table (`BanditResult`, `MypyResult`, `RadonResult`, `VultureResult`, `EslintResult`).
+3. The helper `save_scan_and_rows(Base, scan_row, result_rows)` attaches the objects to a fresh session, flushes once, and reports counts to the CLI.
+4. Environment overrides: set `AUDITORDBPATH` to relocate the database file, and `AUDITORDBECHO=1` to enable SQL logging.
+
+
+CLI guide
+---------
+
+Assuming Python 3.10+ is available and the necessary analyzers (Bandit, Mypy, Radon, Vulture, ESLint plus their Node dependencies) are installed in the host environment:
+
+- Initialise the database: run `python -m auditor seed-db`.
+- Execute a single tool: `python -m auditor run-tool <tool> <target> [--json-out PATH]` where `<tool>` is one of `bandit`, `mypy`, `radon`, `vulture`, or `eslint`. The command emits a JSON payload with stdout, stderr, exit code, and parsed JSON data; optionally write it to a file via `--json-out`.
+- Run a full audit: `python -m auditor audit <path>` launches the default tool suite in parallel using subprocesses, converts each result via the schema helpers, and persists everything to SQLite.
+- Filter the tools: append `--tool bandit --tool radon` to restrict the run. `--jobs` caps parallelism; `--stop-on-error` aborts on the first failing analyzer.
+- Workspace mode: add `--multi` to treat `<path>` as a root directory. The orchestrator inspects the first-level subdirectories (excluding `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`, `.mypy_cache`) and audits each project sequentially while keeping per-project tool execution parallelised.
+
+
+Result parsing
+--------------
+
+A shared function `parsetomodels(result: ToolRunResult)` resolves the correct converter based on `result.tool`:
+
+- Bandit → `bandit_json_to_models(result.parsed_json.get("results", []), cwd=result.cwd)`
+- Mypy → `mypy_ndjson_to_models(result.stdout.strip(), cwd=result.cwd)`
+- Radon → `radon_to_models(result.parsed_json or {}, cwd=result.cwd)`
+- Vulture → `vulture_text_to_models(result.stdout or "", cwd=result.cwd, min_confidence=50)`
+- ESLint → `eslint_rows_to_models(run_shim)` where the shim mirrors the run attributes (`parsed_json`, `stdout`, `stderr`, `cwd`, `returncode`, `duration_s`, `cmd`).
+
+Every converter returns a `(scan_row, rows)` tuple compatible with `save_scan_and_rows`.
+
+
+Extending the suite
+-------------------
+
+- Implement a new tool wrapper deriving from `AuditTool` and returning `ToolRunResult`.
+- Add the factory to `TOOL_FACTORIES` in `auditor/services/orchestrator.py` and supply the appropriate branch in `parsetomodels`.
+- Provide a converter in `auditor/models/parsers` that maps the tool’s raw output to ORM objects.
+- Update the CLI’s default tool list if the new analyzer should run during `audit`.
+
+
+Troubleshooting tips
+--------------------
+
+- Missing analyzers: the CLI emits warnings when a subprocess exits non-zero. Use `--stop-on-error` to fail fast during experimentation.
+- ESLint dependencies: ensure the central Node toolchain includes the plugins referenced by `auditor/node_tools` (unified installation under `script_tool_cache` or `node_tools`).
+- Large workspaces: use `--jobs` to balance parallelism with CPU utilisation. SQLite operates in WAL mode, so concurrent writes from sequential projects remain safe.
+- Logs: CLI commands print per-tool row counts and any stderr captured from subprocesses for quick diagnostics.
+
+
+Status
+------
+
+The repository now ships with a functional end-to-end auditing pipeline: database seeding, tool orchestration, result normalisation, and persistence are all handled by the new CLI stack. Refer to `tester.py` for a scripted example that instantiates the tools directly, parses their output, and inspects the generated ORM objects.

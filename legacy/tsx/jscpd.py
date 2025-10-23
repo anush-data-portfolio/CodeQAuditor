@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 from auditor.models import ToolRunResult
 
 from ..base import AuditTool
+from .nodejs import NodeToolMixin
 
 
-class JscpdTool(AuditTool):
+class JscpdTool(AuditTool, NodeToolMixin):
     """
-    Minimal JSCPD wrapper that runs the tool and exposes the raw JSON payload.
+    Minimal JSCPD wrapper for TS/JS projects that returns the raw ToolRunResult.
     """
 
     @property
@@ -21,55 +22,63 @@ class JscpdTool(AuditTool):
 
     def __init__(
         self,
-        patterns: Optional[Iterable[str]] = None,
-        formats: Optional[Iterable[str]] = None,
-        ignore_globs: Optional[Iterable[str]] = None,
-        min_tokens: Optional[int] = None,
-        min_lines: Optional[int] = None,
-        gitignore: bool = True,
+        patterns: Optional[List[str]] = None,
+        ignore_globs: Optional[List[str]] = None,
+        formats: Optional[List[str]] = None,
+        min_tokens: Optional[int] = 50,
+        package_version: Optional[str] = None,
         extra_args: Optional[List[str]] = None,
         **kw,
     ) -> None:
         super().__init__(**kw)
-        self.patterns = list(patterns or [])
-        self.formats = list(formats or [])
-        self.ignore_globs = list(ignore_globs or [])
+        self.patterns = patterns or ["**/*.{ts,tsx,js,jsx}"]
+        self.ignore_globs = ignore_globs or [
+            "**/.git/**",
+            "**/.hg/**",
+            "**/.svn/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/.next/**",
+            "**/out/**",
+            "**/.cache/**",
+            "**/.turbo/**",
+            "**/__pycache__/**",
+            "**/.mypy_cache/**",
+            "**/.tox/**",
+        ]
+        self.formats = formats or ["javascript", "typescript"]
         self.min_tokens = min_tokens
-        self.min_lines = min_lines
-        self.gitignore = gitignore
+        self.package_version = package_version
         self.extra_args = extra_args or []
-
-    def build_cmd(self, path: str) -> List[str]:
-        return ["jscpd", "--help"]
 
     def audit(self, path):
         repo = Path(path).resolve()
         with tempfile.TemporaryDirectory(prefix="jscpd-") as tmpdir:
             out_dir = Path(tmpdir)
-            cmd: List[str] = [
-                "jscpd",
-                "--reporters",
-                "json",
-                "--silent",
-                "--output",
-                str(out_dir),
-            ]
-
+            cmd = self._node_cmd(
+                cwd=repo,
+                exe="jscpd",
+                npm_package="jscpd",
+                version=self.package_version,
+                extra=[
+                    "--reporters",
+                    "json",
+                    "--silent",
+                    "--gitignore",
+                    "--output",
+                    str(out_dir),
+                ],
+            )
             if self.formats:
                 cmd += ["--format", ",".join(self.formats)]
-            for pat in self.patterns:
-                cmd += ["--pattern", pat]
-            if self.gitignore:
-                cmd.append("--gitignore")
-            for pat in self.ignore_globs:
-                cmd += ["--ignore", pat]
             if self.min_tokens is not None:
                 cmd += ["--min-tokens", str(self.min_tokens)]
-            if self.min_lines is not None:
-                cmd += ["--min-lines", str(self.min_lines)]
-            if self.extra_args:
-                cmd += self.extra_args
-            cmd.append(str(repo))
+            for pattern in self.ignore_globs:
+                cmd += ["--ignore", pattern]
+            for pattern in self.patterns:
+                cmd += ["--pattern", pattern]
+            cmd += self.extra_args
 
             run = self._run(cmd, cwd=str(repo))
 
@@ -78,9 +87,7 @@ class JscpdTool(AuditTool):
                 report_path = out_dir / "jscpd-report.json"
                 if report_path.exists():
                     try:
-                        parsed = json.loads(
-                            report_path.read_text(encoding="utf-8", errors="ignore")
-                        )
+                        parsed = json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
                     except Exception:
                         parsed = None
 

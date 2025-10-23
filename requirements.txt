@@ -1,3 +1,5 @@
 pip install bandit[baseline]
 pip install bandit[sarif]
 shiny
+SQLAlchemy>=1.4,<3
+pydantic>=1.10,<3

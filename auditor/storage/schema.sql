@@ -1,1 +1,0 @@
--- schema stub — fill in tables if using Postgres

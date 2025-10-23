@@ -27,3 +27,5 @@ docs/
 dashboard/
 out/
 node_modules/
+pits/
+legacy/
