@@ -38,6 +38,9 @@ from auditor.core.models.orm import (
     VultureResult,
     GitleaksResult,
     BiomeResult,
+    SnykResult,
+    BearerResult,
+    QltyResult,
 )
 import json
 from pathlib import Path
@@ -57,7 +60,8 @@ def get_all_roots() -> List[str]:
     # Define all result models (excluding RadonResult - complexity metrics, not issues)
     models = [
         BanditResult, EslintResult, MypyResult, SemgrepResult,
-        VultureResult, GitleaksResult, BiomeResult
+        VultureResult, GitleaksResult, BiomeResult, SnykResult,
+        BearerResult, QltyResult
     ]
     
     with get_session() as session:
@@ -155,7 +159,7 @@ def extract_findings_to_json(
     Notes
     -----
     The function queries the following tool result tables:
-    - Semgrep, Bandit, Mypy, Vulture, ESLint, Gitleaks, Biome
+    - Semgrep, Bandit, Mypy, Vulture, ESLint, Gitleaks, Biome, Snyk, Bearer, Qlty
     
     Note: Radon is excluded as it provides complexity analytics, not issues.
 
@@ -186,12 +190,15 @@ def extract_findings_to_json(
 
     TOOL_ORM: Dict[str, Type] = {
         "semgrep": SemgrepResult,
-        "bandit": BanditResult,
+        # "bandit": BanditResult,
         "mypy": MypyResult,
         "vulture": VultureResult,
         "eslint": EslintResult,
         "gitleaks": GitleaksResult,
         "biome": BiomeResult,
+        "snyk": SnykResult,
+        "bearer": BearerResult,
+        "qlty": QltyResult,
         # Note: RadonResult excluded - complexity analytics, not issues
     }
 

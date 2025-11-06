@@ -194,7 +194,7 @@ def _create_qlty_result(
     
     return QltyResult(
         scan=scan_row,
-        root=root_label,
+        root=start_root,
         file_path=file_path,
         line_number=line_number,
         end_line_number=end_line_number,

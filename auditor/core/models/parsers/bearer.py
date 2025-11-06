@@ -184,7 +184,7 @@ def _create_bearer_result(
     
     return BearerResult(
         scan=scan_row,
-        root=root_label,
+        root=start_root,
         file_path=file_path,
         line_number=line_number,
         end_line_number=end_line_number,

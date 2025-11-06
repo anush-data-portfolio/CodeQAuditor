@@ -255,7 +255,7 @@ def _create_snyk_result(
     
     return SnykResult(
         scan=scan_row,
-        root=root_label,
+        root=start_root,
         file_path=file_path,
         line_number=line_number,
         end_line_number=end_line_number,
