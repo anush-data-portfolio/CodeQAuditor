@@ -1,0 +1,5 @@
+{
+  "base_url": "https://ide.metabob.com",
+  "include_paths": ["**/*.py",
+"frontend/**/*.ts"]
+}

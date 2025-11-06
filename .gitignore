@@ -22,10 +22,12 @@ sqlite
 sample/
 *.sh
 *.ipynb
+logs/
 
 docs/
 dashboard/
 out/
 node_modules/
-pits/
 legacy/
+TODO.md
+pits

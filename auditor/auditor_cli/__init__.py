@@ -1,15 +1,23 @@
-from .scan import (
-    build_default_tools,
-    discover_projects,
-    export_reports_to_json,
-    scan_repository,
-    scan_workspace,
-)
+from __future__ import annotations
 
-__all__ = [
-    "build_default_tools",
-    "discover_projects",
-    "export_reports_to_json",
-    "scan_repository",
-    "scan_workspace",
-]
+"""Command-line interface for CodeQAuditor.
+
+This package provides the CLI application built with Typer.
+
+Modules
+-------
+cli : Main CLI implementation
+
+Examples
+--------
+Run from command line:
+    $ python -m auditor audit /path/to/project
+
+See Also
+--------
+auditor.application : Application logic
+"""
+
+from .cli import app
+
+__all__ = ["app"]

@@ -1,7 +1,19 @@
-CodeQAuditor
-============= 
+# CodeQAuditor
 
-CodeQAuditor is a repo-agnostic orchestration layer for static-analysis tooling across Python and JavaScript/TypeScript codebases. A single CLI seeds the SQLite data store, launches the individual analyzers, normalises their output into shared ORM models, and persists every scan for later reporting.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
+**CodeQAuditor** is a comprehensive, production-ready static analysis orchestration platform for Python and JavaScript/TypeScript codebases. It provides a unified interface to run multiple static analysis tools, normalize their outputs, and store results in a structured database for analysis and reporting.
+
+## Features
+
+- **Multi-Tool Support**: Integrates Bandit, Mypy, Radon, Vulture, ESLint, and Semgrep
+- **Parallel Execution**: Run multiple tools simultaneously for faster analysis
+- **Unified Data Model**: Normalized ORM models for consistent result storage
+- **Interactive Dashboard**: Web-based visualization of analysis results
+- **Extensible Architecture**: Easy to add new tools and parsers
+- **Production Ready**: Comprehensive error handling, logging, and configuration management
+- **Export Capabilities**: Export results to CSV and JSON formats
 
 
 Project snapshot

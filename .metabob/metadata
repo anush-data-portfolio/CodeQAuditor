@@ -1,0 +1,23 @@
+{
+  "session_id": "c2Vzc2lvbnMuZjYyOTVjNWEtMTY4NS00Njg5LThhYTItYWFiN2JmN2QxYWY0",
+  "session_token": "c2Vzc2lv...",
+  "state_file": ".metabob/state",
+  "created_at": "2025-11-04T13:55:54.575482",
+  "last_updated": "2025-11-04T14:06:19.637505",
+  "format_version": "4.0",
+  "interrupted": false,
+  "clean_shutdown": true,
+  "created_new": false,
+  "resumed": false,
+  "api_key_provided": false,
+  "keepalive_interval": 300,
+  "resumption": {
+    "can_resume": true,
+    "state_file_exists": true,
+    "session_file_exists": true,
+    "was_interrupted": false,
+    "state_file_age": 0.00491642951965332
+  },
+  "timestamp": 1762283179.642373,
+  "timestamp_iso": "2025-11-04 14:06:19"
+}
